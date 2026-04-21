@@ -1,0 +1,108 @@
+# Docker Compose — full local stack
+#
+# Services
+# ────────────────────────────────────────────────────────────────────────────
+#   db        PostgreSQL 16  (port 5432)
+#   selenium  Chrome Grid    (port 4444, VNC on 7900)
+#   api       FastAPI app    (port 8000)
+#
+# Quick start
+# ────────────────────────────────────────────────────────────────────────────
+#   cp .env.example .env        # fill in your real values
+#   docker compose up --build
+#   open http://localhost:8000/docs
+#
+# The `api` service waits for both `db` and `selenium` to pass their
+# healthchecks before starting, so all three must be healthy on first boot.
+
+services:
+
+  # ── PostgreSQL ─────────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB:       ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"       # exposed for psql / DB tools on the host
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    networks:
+      - rpa_net
+
+  # ── Selenium standalone Chrome ─────────────────────────────────────────────
+  selenium:
+    image: selenium/standalone-chrome:4.21.0
+    restart: unless-stopped
+    shm_size: "2g"        # Chrome needs shared memory > default 64 MB
+    ports:
+      - "4444:4444"       # WebDriver endpoint used by the RPA bot
+      - "7900:7900"       # noVNC viewer — open in browser to watch the bot
+    environment:
+      SE_NODE_MAX_SESSIONS:    ${RPA_MAX_WORKERS:-2}
+      SE_NODE_SESSION_TIMEOUT: 300
+    healthcheck:
+      # Check that the Grid reports ready:true.  The word "ready" appears in
+      # the JSON response regardless of spacing, so grep without regex is safe.
+      test: ["CMD-SHELL", "curl -sf http://localhost:4444/wd/hub/status | grep -q 'ready'"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 10s
+    networks:
+      - rpa_net
+
+  # ── FastAPI backend ────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env                # load all variables from your local .env
+    environment:
+      # These two override any value in .env so the app always reaches
+      # the other containers by their Compose service name.
+      POSTGRES_HOST:      db
+      SELENIUM_REMOTE_URL: http://selenium:4444/wd/hub
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      selenium:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health | grep -q 'ok'"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s   # allow time for alembic upgrade head to finish
+    networks:
+      - rpa_net
+
+    # ── Development hot-reload (optional) ─────────────────────────────────
+    # Uncomment the block below to mount the local source tree into the
+    # container so code changes take effect without rebuilding the image.
+    # Add --reload to the CMD in Dockerfile or override the command here.
+    #
+    # volumes:
+    #   - .:/app
+    # command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+
+# ── Named volumes ──────────────────────────────────────────────────────────
+volumes:
+  postgres_data:
+    driver: local
+
+# ── Networks ───────────────────────────────────────────────────────────────
+networks:
+  rpa_net:
+    driver: bridge

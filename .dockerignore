@@ -1,0 +1,44 @@
+# ── Version control ────────────────────────────────────────────────────────────
+.git
+.gitignore
+
+# ── Python artifacts ───────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# ── Virtual environments ───────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+
+# ── Test & coverage ────────────────────────────────────────────────────────────
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ── Linting & type-checking caches ────────────────────────────────────────────
+.mypy_cache/
+.ruff_cache/
+
+# ── Secrets ────────────────────────────────────────────────────────────────────
+# .env.example is safe to include (no real secrets).
+# .env must never be sent to the build context.
+.env
+
+# ── Editor / OS ────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── CI / docs (not needed at runtime) ─────────────────────────────────────────
+.github/
+*.md

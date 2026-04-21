@@ -1,0 +1,12 @@
+target-version = "py312"
+line-length = 100
+
+[lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = [
+    "E501",   # line too long — handled by formatter
+    "B008",   # FastAPI pattern: Query()/Depends() as default args is intentional
+]
+
+[lint.isort]
+known-first-party = ["app"]
