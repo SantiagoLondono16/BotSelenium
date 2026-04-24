@@ -120,4 +120,4 @@ jobs:
         run: docker build -t rpa-api:ci .
 
       - name: Confirm image was created
-        run: docker image inspect rpa-api:ci --format '{{.Size}}' | xargs -I{} echo "Image size: {} bytes"
+        run: docker image ls rpa-api:ci
