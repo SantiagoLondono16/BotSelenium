@@ -16,6 +16,7 @@ from app.rpa.selectors import PORTAL_DATE_FORMAT, ColumnIndex
 def _make_cell(text: str) -> MagicMock:
     cell = MagicMock()
     cell.text = text
+    cell.get_attribute.return_value = text
     return cell
 
 
