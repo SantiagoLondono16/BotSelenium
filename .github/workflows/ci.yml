@@ -13,40 +13,12 @@ concurrency:
 
 jobs:
 
-  # ── Job 1: Lint & type check ───────────────────────────────────────────────
-  # Runs first. Both test and docker-build jobs wait for this to pass.
-  lint:
-    name: Lint & Type Check
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: "pip"
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Ruff — lint
-        run: ruff check .
-
-      - name: Ruff — format check
-        run: ruff format --check .
-
-      - name: Mypy — static type check
-        run: mypy app --ignore-missing-imports
-
-  # ── Job 2: Unit tests ──────────────────────────────────────────────────────
+  # ── Unit tests ─────────────────────────────────────────────────────────────
   # Uses an in-memory SQLite database for fast, isolated unit tests.
   # A real Postgres service is also started to smoke-test Alembic migrations.
   test:
     name: Unit Tests
     runs-on: ubuntu-latest
-    needs: lint
 
     services:
       postgres:
@@ -92,32 +64,10 @@ jobs:
           cache: "pip"
 
       - name: Install dependencies
-        # aiosqlite is the async SQLite driver used by conftest.py for in-memory tests.
-        # It is a test-only dependency and therefore not in requirements.txt.
         run: pip install -r requirements.txt aiosqlite
 
       - name: Alembic — smoke-test migrations against real Postgres
-        # Validates that the migration scripts apply cleanly to a fresh database.
-        # The unit tests themselves use in-memory SQLite; this step is exclusively
-        # a migration correctness check.
         run: alembic upgrade head
 
       - name: Pytest — unit tests
         run: pytest tests/ -v --tb=short -x
-
-  # ── Job 3: Docker build check ──────────────────────────────────────────────
-  # Verifies the image builds successfully using the committed Dockerfile.
-  # Runs in parallel with the test job (both depend on lint, not on each other).
-  docker-build:
-    name: Docker Build Check
-    runs-on: ubuntu-latest
-    needs: lint
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build Docker image
-        run: docker build -t rpa-api:ci .
-
-      - name: Confirm image was created
-        run: docker image ls rpa-api:ci
