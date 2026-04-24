@@ -141,9 +141,17 @@ class TestExtractTableRows:
 
 
 class TestFillDateInput:
-    def test_clears_and_types(self) -> None:
+    def test_sets_value_via_js_and_tabs_out(self) -> None:
         driver = MagicMock()
         element = MagicMock()
         _fill_date_input(driver, element, "15/01/2024")
-        element.clear.assert_called_once()
-        element.send_keys.assert_called_once_with("15/01/2024")
+
+        # Value is written through JavaScript, not via send_keys
+        assert driver.execute_script.call_count == 2
+        first_call_args = driver.execute_script.call_args_list[0][0]
+        assert element in first_call_args
+        assert "15/01/2024" in first_call_args
+
+        # TAB closes the jQuery UI calendar popup
+        from selenium.webdriver.common.keys import Keys
+        element.send_keys.assert_called_once_with(Keys.TAB)
