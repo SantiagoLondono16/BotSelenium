@@ -28,7 +28,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"       # exposed for psql / DB tools on the host
+      - "5433:5432"       # expuesto en 5433 para evitar conflicto con otros PostgreSQL locales
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
@@ -40,7 +40,7 @@ services:
 
   # ── Selenium standalone Chrome ─────────────────────────────────────────────
   selenium:
-    image: selenium/standalone-chrome:4.21.0
+    image: selenium/standalone-chrome:latest       # x86_64 (Windows / Linux amd64)
     restart: unless-stopped
     shm_size: "2g"        # Chrome needs shared memory > default 64 MB
     ports:
@@ -73,7 +73,7 @@ services:
       POSTGRES_HOST:      db
       SELENIUM_REMOTE_URL: http://selenium:4444/wd/hub
     ports:
-      - "8000:8000"
+      - "8004:8000"     # expuesto en 8004 para evitar conflicto con otros servicios locales
     depends_on:
       db:
         condition: service_healthy
@@ -98,6 +98,21 @@ services:
     # command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
 
 # ── Named volumes ──────────────────────────────────────────────────────────
+
+  # ── React frontend ─────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: http://localhost:8004
+    restart: unless-stopped
+    ports:
+      - "3001:80"
+    depends_on:
+      - api
+    networks:
+      - rpa_net
+
 volumes:
   postgres_data:
     driver: local

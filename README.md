@@ -59,10 +59,15 @@ El bot inicia sesión en el portal, navega a **Facturación → Generar Factura*
                                               │
                                               ▼
                             ┌───────────────────────────────────┐
-                            │  Selenium standalone-chrome       │
+                            │  selenium/standalone-chrome       │
                             │  (Docker, puerto 4444)            │
                             │  Visor VNC en puerto 7900         │
                             └───────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│  Frontend React  (Nginx, puerto 3001)                           │
+│  Consume la API en http://localhost:8004                        │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ### Responsabilidades de cada componente
@@ -175,20 +180,31 @@ PORTAL_PASSWORD=<REPLACE>
 docker compose up --build
 ```
 
-Docker Compose inicia tres contenedores en orden de dependencia:
+Docker Compose inicia cuatro contenedores en orden de dependencia:
 
-| Contenedor | Healthcheck | Listo cuando… |
-|------------|-------------|---------------|
-| `db` | `pg_isready` | Postgres acepta conexiones |
-| `selenium` | `curl /wd/hub/status` | Chrome Grid reporta `ready` |
-| `api` | `curl /health` | Alembic aplicó las migraciones y uvicorn está escuchando |
+| Contenedor | Imagen | Puerto local | Healthcheck | Listo cuando… |
+|------------|--------|:------------:|-------------|---------------|
+| `db` | `postgres:16-alpine` | `5433` | `pg_isready` | Postgres acepta conexiones |
+| `selenium` | `selenium/standalone-chrome:latest` | `4444`, `7900` (VNC) | `curl /wd/hub/status` | Chrome Grid reporta `ready` |
+| `api` | imagen local `Dockerfile` | `8004` | `curl /health` | Alembic aplicó las migraciones y uvicorn está escuchando |
+| `frontend` | imagen local `frontend/Dockerfile` | `3001` | — | Nginx sirve la SPA React |
 
-Documentación interactiva de la API → `http://localhost:8000/docs`
+> **Nota de plataforma:** la imagen de Selenium es `selenium/standalone-chrome` (x86\_64 / Windows / Linux amd64).
+
+URLs disponibles una vez que el stack está en pie:
+
+| Interfaz | URL |
+|----------|-----|
+| API REST (Swagger) | <http://localhost:8004/docs> |
+| Frontend React | <http://localhost:3001> |
+| Selenium Grid UI | <http://localhost:4444/ui> |
+| VNC (ver el bot en vivo) | <http://localhost:7900> (contraseña: `secret`) |
+| PostgreSQL (externo) | `localhost:5433` |
 
 ### 3. Disparar un job de extracción
 
 ```bash
-curl -s -X POST http://localhost:8000/rpa/extract \
+curl -s -X POST http://localhost:8004/rpa/extract \
   -H "Content-Type: application/json" \
   -d '{
     "fecha_inicial": "2024-01-01",
@@ -209,7 +225,7 @@ Respuesta `202 Accepted`:
 ### 4. Consultar el estado del job
 
 ```bash
-curl -s http://localhost:8000/jobs/3fa85f64-5717-4562-b3fc-2c963f66afa6 | python3 -m json.tool
+curl -s http://localhost:8004/jobs/3fa85f64-5717-4562-b3fc-2c963f66afa6 | python3 -m json.tool
 ```
 
 Valores posibles de `status`: `pending` → `running` → `success` | `failed`
@@ -218,10 +234,10 @@ Valores posibles de `status`: `pending` → `running` → `success` | `failed`
 
 ```bash
 # Todos los registros de un job, paginados
-curl -s "http://localhost:8000/records?job_id=3fa85f64-5717-4562-b3fc-2c963f66afa6&page=1&size=20"
+curl -s "http://localhost:8004/records?job_id=3fa85f64-5717-4562-b3fc-2c963f66afa6&page=1&size=20"
 
 # Un registro individual
-curl -s "http://localhost:8000/records/<record_id>"
+curl -s "http://localhost:8004/records/<record_id>"
 ```
 
 ### Desarrollo local (sin Docker)
@@ -252,7 +268,7 @@ Las pruebas utilizan **SQLite en memoria** y mockean todas las llamadas a Seleni
 
 ### Depuración visual (VNC de Selenium)
 
-Establece `SELENIUM_HEADLESS=false` en `.env`, luego abre `http://localhost:7900` (contraseña: `secret`) para ver la sesión de Chrome en vivo mientras el bot se ejecuta.
+Establece `SELENIUM_HEADLESS=false` en `.env`, luego abre <http://localhost:7900> (contraseña: `secret`) para ver la sesión de Chrome en vivo mientras el bot se ejecuta.
 
 ### Migraciones de base de datos
 

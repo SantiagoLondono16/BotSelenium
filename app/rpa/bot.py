@@ -44,6 +44,7 @@ import asyncio
 import uuid
 from datetime import date
 
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.db.session import ThreadSessionLocal
 from app.rpa.driver_factory import create_driver, quit_driver
@@ -120,6 +121,18 @@ def run_extraction_job(
 
             log.info("bot_step", step="extract", limit_requested=limit_requested)
             rows = extract_table_rows(driver, limit_requested)
+
+            # Stamp each row with the regime derived from the active convenio filter.
+            _settings = get_settings()
+            convenio_lower = _settings.portal_contrato.lower()
+            if "subsidiado" in convenio_lower:
+                regime = "SUBSIDIADO"
+            elif "contributivo" in convenio_lower:
+                regime = "CONTRIBUTIVO"
+            else:
+                regime = _settings.portal_contrato.upper()
+            for row in rows:
+                row["regime"] = regime
 
             log.info("bot_step", step="persist", row_count=len(rows))
             loop.run_until_complete(_persist(job_id, rows))

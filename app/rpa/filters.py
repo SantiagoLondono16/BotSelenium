@@ -1,24 +1,26 @@
 """
-Date filter application and search result detection.
+Filter application — Facturación → Generar Factura form.
 
-Responsibilities:
-  1. Fill the fecha_inicial and fecha_final inputs.
-  2. Click the Buscar button.
-  3. Wait for the results table to change state (updated rows OR no-results message).
+Required filter order (VERIFIED from PDX-RPA-SaviaSalud reference project):
+  1. Convenio  → "Savia Salud Subsidiado"  (unlocks Contrato via AJAX)
+  2. Contrato  → "SAVIA SALUD SUBSIDIADO"  (unlocks Sedes via AJAX)
+  3. Sedes     → select all
+  4. Modalidad → settings.portal_modalidad (default: "US")
+  5. Fecha inicial / Fecha final
+  6. Buscar → wait for DataTables to update
 
-All selectors are imported from selectors.py — do not add locators here.
-
-NOTE ON DATE INPUTS
-───────────────────
-Some portals render custom date pickers (React DatePicker, Flatpickr, etc.)
-that do not respond to send_keys.  In that case, use the JavaScript fallback
-documented in _fill_date_input() below.
+Between each dropdown selection the portal fires an AJAX request and renders
+a BlockUI overlay.  _wait_for_blockui() must be called before every interaction
+to avoid ElementClickInterceptedException on overlapping elements.
 """
 
 import time
 from datetime import date
 
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import (
+    StaleElementReferenceException,
+    TimeoutException,
+)
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.remote.webdriver import WebDriver
@@ -30,12 +32,10 @@ from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
 from app.rpa.selectors import PORTAL_DATE_FORMAT, FilterForm, ResultTable
 
-_SHORT_WAIT_S = 5   # seconds to wait for dropdown to open / close
-
-
 logger = get_logger(__name__)
 
 _POLL_INTERVAL_S = 0.5
+_DROPDOWN_PAUSE_S = 0.5  # time after clicking trigger before checking .open
 
 
 class FilterError(Exception):
@@ -49,7 +49,15 @@ def apply_filters_and_search(
     settings: Settings | None = None,
 ) -> None:
     """
-    Fill the date range inputs, click Buscar, and wait for results to load.
+    Apply all required filters and click Buscar.
+
+    Filter order is critical (each step unlocks the next via AJAX):
+      1. Convenio  → unlocks Contrato
+      2. Contrato  → unlocks Sedes
+      3. Sedes     → select all
+      4. Modalidad
+      5. Dates
+      6. Buscar
 
     Raises:
         FilterError: on timeout at any step.
@@ -67,47 +75,68 @@ def apply_filters_and_search(
         "filters_start",
         fecha_inicial=fi_str,
         fecha_final=ff_str,
+        convenio=settings.portal_convenio,
+        modalidad=settings.portal_modalidad,
     )
 
     try:
-        # ── Step 1: Contratos — disabled by portal (user's contract is fixed) ──
-        # Only interact if the dropdown is actually enabled; skip silently if not.
-        _bootstrap_select_all(driver, wait, FilterForm.CONTRATOS_TRIGGER, "contratos")
+        # ── Step 1: Convenio ──────────────────────────────────────────────────
+        _wait_for_blockui(driver, timeout)
+        _select_option(
+            driver, wait, timeout,
+            FilterForm.CONVENIOS_TRIGGER,
+            settings.portal_convenio,
+            "convenio",
+        )
 
-        # ── Step 2: select all Sedes ──────────────────────────────────────────
-        _bootstrap_select_all(driver, wait, FilterForm.SEDES_TRIGGER, "sedes")
+        # ── Step 2: Contrato (enabled by Convenio AJAX) ───────────────────────
+        _wait_for_blockui(driver, timeout)
+        _select_option(
+            driver, wait, timeout,
+            FilterForm.CONTRATOS_TRIGGER,
+            settings.portal_contrato,
+            "contrato",
+        )
 
-        # ── Step 3: fill fecha_inicial ────────────────────────────────────────
+        # ── Step 3: Sedes — select all (enabled by Contrato AJAX) ─────────────
+        _wait_for_blockui(driver, timeout)
+        _select_all_options(driver, wait, timeout, FilterForm.SEDES_TRIGGER, "sedes")
+
+        # ── Step 4: Modalidad ─────────────────────────────────────────────────
+        _wait_for_blockui(driver, timeout)
+        _select_option(
+            driver, wait, timeout,
+            FilterForm.MODALIDADES_TRIGGER,
+            settings.portal_modalidad,
+            "modalidad",
+        )
+
+        # ── Step 5: Fecha inicial ─────────────────────────────────────────────
         fi_el = wait.until(
             EC.element_to_be_clickable(FilterForm.FECHA_INICIAL),
-            message=f"fecha_inicial input not clickable after {timeout}s",
+            message=f"fecha_inicial not clickable after {timeout}s",
         )
         _fill_date_input(driver, fi_el, fi_str)
         logger.debug("filters_fecha_inicial_set", value=fi_str)
 
-        # ── Step 4: fill fecha_final ──────────────────────────────────────────
+        # ── Step 6: Fecha final ───────────────────────────────────────────────
         ff_el = wait.until(
             EC.element_to_be_clickable(FilterForm.FECHA_FINAL),
-            message=f"fecha_final input not clickable after {timeout}s",
+            message=f"fecha_final not clickable after {timeout}s",
         )
         _fill_date_input(driver, ff_el, ff_str)
         logger.debug("filters_fecha_final_set", value=ff_str)
 
-        # ── Step 5: snapshot tbody reference for staleness detection ─────────
-        # DataTables rebuilds the <tbody> element on every search — even when
-        # the result is 0 rows.  Capturing a stale reference here lets us wait
-        # for the actual AJAX round-trip to complete instead of reading the
-        # pre-existing empty state.
+        # ── Snapshot tbody before Buscar for staleness detection ──────────────
         try:
-            pre_tbody = driver.find_element(
-                By.CSS_SELECTOR, "#detalle_consulta tbody"
-            )
+            pre_tbody = driver.find_element(By.CSS_SELECTOR, "#detalle_consulta tbody")
         except Exception:
             pre_tbody = None
-        pre_search_rows = _count_table_rows(driver)
-        logger.debug("filters_pre_search_row_count", count=pre_search_rows)
+        pre_count = _count_table_rows(driver)
+        logger.debug("filters_pre_search_row_count", count=pre_count)
 
-        # ── Step 6: click Buscar ──────────────────────────────────────────────
+        # ── Step 7: click Buscar ──────────────────────────────────────────────
+        _wait_for_blockui(driver, timeout)
         buscar = wait.until(
             EC.element_to_be_clickable(FilterForm.BUSCAR_BUTTON),
             message=f"Buscar button not clickable after {timeout}s",
@@ -115,122 +144,170 @@ def apply_filters_and_search(
         buscar.click()
         logger.info("filters_buscar_clicked")
 
-        # ── Step 7: wait for AJAX + results ───────────────────────────────────
-        _wait_for_results(driver, pre_search_rows, timeout, pre_tbody)
+        # Fixed pause: lets DataTables fire its AJAX request before polling.
+        time.sleep(1.5)
+
+        # ── Step 8: wait for DataTables AJAX to complete ──────────────────────
+        _wait_for_results(driver, pre_count, timeout, pre_tbody)
 
     except TimeoutException as exc:
         logger.error("filters_timeout", current_url=driver.current_url, detail=str(exc))
         raise FilterError(
-            f"Timed out while applying filters or waiting for results: {exc}. "
-            "Verify selectors in selectors.py → FilterForm / ResultTable."
+            f"Timed out while applying filters: {exc}. "
+            "Verify FilterForm selectors in selectors.py."
         ) from exc
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-def _bootstrap_select_all(
+def _wait_for_blockui(driver: WebDriver, timeout: int) -> None:
+    """Wait until the BlockUI loading overlay disappears."""
+    try:
+        WebDriverWait(driver, timeout).until(
+            EC.invisibility_of_element_located(FilterForm.BLOCKUI_OVERLAY)
+        )
+    except TimeoutException:
+        pass  # no overlay present — safe to proceed
+
+
+def _wait_for_enabled(
+    driver: WebDriver,
+    timeout: int,
+    trigger_locator: tuple,
+    label: str,
+) -> WebElement | None:
+    """
+    Wait until the Bootstrap Select trigger no longer carries the 'disabled' class.
+    Returns the trigger element, or None if it remained disabled.
+    """
+    def _not_disabled(d: WebDriver) -> WebElement | bool:
+        els = d.find_elements(*trigger_locator)
+        if not els:
+            return False
+        el = els[0]
+        if "disabled" in (el.get_attribute("class") or "").split():
+            return False
+        return el
+
+    try:
+        trigger = WebDriverWait(driver, timeout).until(
+            _not_disabled,
+            message=f"{label} trigger did not become enabled within {timeout}s",
+        )
+        logger.debug("filters_dropdown_enabled", label=label)
+        return trigger
+    except TimeoutException:
+        logger.warning(
+            "filters_dropdown_still_disabled",
+            label=label,
+            hint="Proceeding anyway — previous AJAX step may have failed",
+        )
+        return None
+
+
+def _select_option(
     driver: WebDriver,
     wait: WebDriverWait,
+    timeout: int,
+    trigger_locator: tuple,
+    option_text: str,
+    label: str,
+) -> None:
+    """
+    Open a Bootstrap Select dropdown and click the option matching option_text.
+    Waits for the trigger to become enabled before interacting.
+    """
+    trigger = _wait_for_enabled(driver, timeout, trigger_locator, label)
+    if trigger is None:
+        return  # already warned
+
+    # Open dropdown.
+    try:
+        trigger.click()
+    except Exception:
+        driver.execute_script("arguments[0].click();", trigger)
+    time.sleep(_DROPDOWN_PAUSE_S)
+
+    # Find and click the matching option.
+    option_xpath = (
+        ".//ul[contains(@class,'dropdown-menu')]"
+        f"//span[normalize-space(text())='{option_text}']"
+    )
+    try:
+        option = WebDriverWait(driver, 5).until(
+            EC.element_to_be_clickable((By.XPATH, option_xpath)),
+            message=f"Option '{option_text}' not visible in {label} dropdown",
+        )
+        option.click()
+        logger.info("filters_option_selected", label=label, option=option_text)
+    except TimeoutException:
+        available = [
+            el.text.strip()
+            for el in driver.find_elements(
+                By.CSS_SELECTOR,
+                ".dropdown-menu.open .dropdown-menu.inner li a span.text",
+            )
+        ]
+        logger.warning(
+            "filters_option_not_found",
+            label=label,
+            wanted=option_text,
+            available=available,
+        )
+        # Close the dangling open dropdown.
+        try:
+            trigger.click()
+        except Exception:
+            pass
+
+
+def _select_all_options(
+    driver: WebDriver,
+    wait: WebDriverWait,
+    timeout: int,
     trigger_locator: tuple,
     label: str,
 ) -> None:
     """
-    Open a Bootstrap Select dropdown and select all available options.
-
-    Two variants handled automatically:
-
-    A) Dropdown with actionsBox (e.g. Sedes):  has <button class="bs-select-all">.
-    B) Dropdown without actionsBox (e.g. Contratos):  click each unselected <li>.
-
-    Disabled / pre-selected detection:
-    - Instead of reading the "disabled" CSS class (which can be unreliable),
-      we click the trigger and then check whether a .dropdown-menu.open
-      element actually appeared.  If it did not open, the dropdown is either
-      disabled or pre-selected by the portal — we log and skip gracefully.
-
-    Does NOT raise on failure — logs details and continues so Buscar still runs.
+    Open a Bootstrap Select dropdown and click its "Select All" button.
+    Falls back to clicking each unselected option individually if no button exists.
     """
+    trigger = _wait_for_enabled(driver, timeout, trigger_locator, label)
+    if trigger is None:
+        return
+
     try:
-        trigger = wait.until(
-            EC.presence_of_element_located(trigger_locator),
-            message=f"{label} dropdown trigger not present",
-        )
-
-        # Log raw element state for easier future debugging.
-        elem_class = trigger.get_attribute("class") or ""
-        elem_disabled_attr = trigger.get_attribute("disabled")
-        logger.debug(
-            "filters_dropdown_trigger_found",
-            label=label,
-            class_attr=elem_class,
-            disabled_attr=elem_disabled_attr,
-            is_enabled=trigger.is_enabled(),
-        )
-
-        # Try clicking the trigger.
-        try:
-            trigger.click()
-        except Exception:
-            driver.execute_script("arguments[0].click();", trigger)
-
-        # Give the dropdown a moment to open.
-        time.sleep(0.4)
-
-        # Check whether the dropdown actually opened (Bootstrap Select adds
-        # the class "open" to the parent or uses .dropdown-menu.open).
-        open_menus = driver.find_elements(By.CSS_SELECTOR, ".dropdown-menu.open")
-        if not open_menus:
-            logger.info(
-                "filters_dropdown_did_not_open",
-                label=label,
-                hint="dropdown may be disabled or already fully pre-selected by portal",
-            )
-            return
-
-        logger.debug("filters_dropdown_opened", label=label)
-
-        # ── Variant A: "Select All" button present ─────────────────────────
-        select_all_btns = driver.find_elements(*FilterForm.SELECT_ALL_BUTTON)
-        visible_select_all = [b for b in select_all_btns if b.is_displayed()]
-        if visible_select_all:
-            visible_select_all[0].click()
-            logger.debug("filters_select_all_clicked", label=label)
-        else:
-            # ── Variant B: click every unselected option individually ───────
-            opts = driver.find_elements(
-                By.CSS_SELECTOR,
-                ".dropdown-menu.open .dropdown-menu.inner li:not(.selected) a",
-            )
-            clicked = 0
-            for opt in opts:
-                if opt.is_displayed():
-                    opt.click()
-                    clicked += 1
-            logger.debug("filters_options_clicked", label=label, count=clicked)
-
-        # Close the dropdown by pressing Escape or clicking the trigger again.
         trigger.click()
-        time.sleep(0.2)
-        logger.info("filters_dropdown_all_selected", label=label)
+    except Exception:
+        driver.execute_script("arguments[0].click();", trigger)
+    time.sleep(_DROPDOWN_PAUSE_S)
 
-    except TimeoutException:
-        logger.warning(
-            "filters_dropdown_select_all_failed",
-            label=label,
-            hint="Verify FilterForm trigger selectors in selectors.py",
+    # Prefer the explicit "Select All" button.
+    btns = [b for b in driver.find_elements(*FilterForm.SELECT_ALL_BUTTON) if b.is_displayed()]
+    if btns:
+        btns[0].click()
+        logger.info("filters_select_all_clicked", label=label)
+    else:
+        opts = driver.find_elements(
+            By.CSS_SELECTOR,
+            ".dropdown-menu.open .dropdown-menu.inner li:not(.selected) a",
         )
+        clicked = sum(1 for o in opts if o.is_displayed() and (o.click() or True))
+        logger.info("filters_options_individually_selected", label=label, count=clicked)
+
+    # Close dropdown.
+    try:
+        trigger.click()
+    except Exception:
+        pass
+    time.sleep(0.2)
 
 
 def _fill_date_input(driver: WebDriver, element: WebElement, value: str) -> None:
     """
-    Write a date string into a jQuery UI datepicker input.
-
-    jQuery datepicker opens a calendar popup on focus.  The strategy is:
-      1. Set the value via JavaScript (bypasses the popup entirely).
-      2. Fire 'change' so jQuery datepicker registers the new date internally.
-      3. Press Tab to dismiss any open popup and move focus, preventing
-         the popup from intercepting the next element interaction.
+    Write a date string into a jQuery UI datepicker input via JavaScript,
+    then fire a change event and Tab out to close any open calendar popup.
     """
     driver.execute_script("arguments[0].value = arguments[1];", element, value)
     driver.execute_script(
@@ -251,33 +328,33 @@ def _wait_for_results(
     pre_tbody: WebElement | None = None,
 ) -> None:
     """
-    Wait until the DataTables search AJAX round-trip is complete.
+    Wait until DataTables has finished processing the search AJAX response.
 
-    VERIFIED table: id="detalle_consulta" (DataTables, responsive mode).
-
-    Strategy
-    ────────
-    1. Staleness of pre_tbody — DataTables replaces the <tbody> element on
-       every render, including the "0 results" case.  This is the most reliable
-       signal that the AJAX response has been processed.  If pre_tbody is None
-       (page had no tbody before Buscar), skip this step.
-
-    2. Polling for outcome — once staleness is detected (or after a minimum
-       wait), check:
-         B) td.dataTables_empty visible  → search returned 0 rows.
-         C) row count differs from snapshot → rows loaded.
-
-    3. Graceful fallback — if staleness never fires but the timeout is reached,
-       log a warning and return so Buscar is not retried.
+    Strategy:
+      1. Wait for pre_tbody to become stale (DataTables replaces <tbody> on
+         every render, including 0-result searches) OR the no-results cell to
+         appear — whichever fires first.
+      2. Poll up to 10 s for the final outcome:
+           - "Tabla sin información" cell visible  → 0 results
+           - row count changed from snapshot       → data returned
     """
     logger.debug("filters_waiting_for_results", previous_row_count=previous_row_count)
 
-    # ── Step 1: wait for tbody to become stale ────────────────────────────────
     if pre_tbody is not None:
         try:
+            def _stale_or_empty(d: WebDriver) -> bool:
+                no_results = d.find_elements(*ResultTable.NO_RESULTS_MESSAGE)
+                if no_results and no_results[0].is_displayed():
+                    return True
+                try:
+                    pre_tbody.is_enabled()
+                    return False
+                except StaleElementReferenceException:
+                    return True
+
             WebDriverWait(driver, timeout).until(
-                EC.staleness_of(pre_tbody),
-                message="DataTables tbody did not become stale — AJAX may not have fired",
+                _stale_or_empty,
+                message="DataTables tbody did not become stale after Buscar",
             )
             logger.debug("filters_tbody_became_stale")
         except TimeoutException:
@@ -286,32 +363,20 @@ def _wait_for_results(
                 hint="DataTables did not rebuild tbody within timeout",
             )
 
-    # ── Step 2: poll for actual outcome (up to 10 s after stale) ─────────────
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
-        # Condition B: "Tabla sin información" cell
         no_results = driver.find_elements(*ResultTable.NO_RESULTS_MESSAGE)
         if no_results and no_results[0].is_displayed():
             logger.info("filters_search_returned_no_results")
             return
-
-        # Condition C: real data rows appeared
-        current_count = _count_table_rows(driver)
-        if current_count != previous_row_count:
-            logger.info(
-                "filters_results_loaded",
-                previous_count=previous_row_count,
-                new_count=current_count,
-            )
+        current = _count_table_rows(driver)
+        if current != previous_row_count:
+            logger.info("filters_results_loaded", new_count=current)
             return
-
         time.sleep(_POLL_INTERVAL_S)
 
-    # Graceful fallback — neither condition fired within 10 s after AJAX.
-    # Continue anyway; the extractor will simply find 0 rows.
     logger.warning(
         "filters_results_ambiguous",
         row_count=_count_table_rows(driver),
-        hint="Neither empty-state cell nor data rows detected after AJAX; "
-             "check ResultTable selectors in selectors.py",
+        hint="Neither empty-state nor row-count change detected — check ResultTable selectors",
     )

@@ -41,6 +41,14 @@ class Settings(BaseSettings):
     portal_username: str
     portal_password: str
 
+    # ── Portal filter configuration ───────────────────────────────────────────
+    # Convenio (régimen) visible text in the Bootstrap Select dropdown.
+    portal_convenio: str = "Savia Salud Subsidiado"
+    # Contrato visible text (appears after Convenio AJAX populates the list).
+    portal_contrato: str = "SAVIA SALUD SUBSIDIADO"
+    # Modalidad code to select.
+    portal_modalidad: str = "US"
+
     # ── Selenium ──────────────────────────────────────────────────────────────
     selenium_remote_url: str = "http://selenium:4444/wd/hub"
     selenium_timeout_seconds: int = 30

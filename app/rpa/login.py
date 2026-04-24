@@ -52,6 +52,7 @@ def perform_login(driver: WebDriver, settings: Settings | None = None) -> None:
 
     try:
         # ── Step 2: fill username ─────────────────────────────────────────────
+        logger.debug("login_waiting_for_username_field", locator=str(LoginPage.USERNAME))
         username_el = wait.until(
             EC.visibility_of_element_located(LoginPage.USERNAME),
             message=f"Username field not visible after {timeout}s",
@@ -61,6 +62,7 @@ def perform_login(driver: WebDriver, settings: Settings | None = None) -> None:
         logger.debug("login_username_entered")
 
         # ── Step 3: fill password ─────────────────────────────────────────────
+        logger.debug("login_waiting_for_password_field", locator=str(LoginPage.PASSWORD))
         password_el = wait.until(
             EC.visibility_of_element_located(LoginPage.PASSWORD),
             message=f"Password field not visible after {timeout}s",
@@ -70,6 +72,7 @@ def perform_login(driver: WebDriver, settings: Settings | None = None) -> None:
         logger.debug("login_password_entered")
 
         # ── Step 4: submit ────────────────────────────────────────────────────
+        logger.debug("login_waiting_for_submit_button", locator=str(LoginPage.SUBMIT_BUTTON))
         submit_btn = wait.until(
             EC.element_to_be_clickable(LoginPage.SUBMIT_BUTTON),
             message=f"Submit button not clickable after {timeout}s",
